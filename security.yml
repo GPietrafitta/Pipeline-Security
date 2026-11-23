@@ -1,0 +1,60 @@
+name: security
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history
+        run: |
+          # Built-in rules may ignore public example keys. Add a lab-only rule.
+          cat > "$RUNNER_TEMP/gitleaks-lab.toml" <<'RULES'
+          [extend]
+          useDefault = true
+
+          [[rules]]
+          id = "lab-aws-example"
+          description = "Public AWS example access key planted for this lab"
+          regex = '''AKIAIOSFODNN7EXAMPLE'''
+          path = '''(^|/)config\.py$'''
+          RULES
+          docker run --rm \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$RUNNER_TEMP/gitleaks-lab.toml:/lab.toml:ro" \
+            zricethezav/gitleaks:v8.24.2 git /repo \
+            --config /lab.toml --log-opts=HEAD --redact=100 --exit-code 1
+
+  sast:
+    name: SAST report (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Report code findings
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" -w /src \
+            semgrep/semgrep:1.185.0 semgrep scan --config p/python --metrics off app.py
+
+  dependencies:
+    name: Dependency report (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Report vulnerable dependencies
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" \
+            aquasec/trivy:0.76.2 fs --scanners vuln --format table --exit-code 0 /repo
